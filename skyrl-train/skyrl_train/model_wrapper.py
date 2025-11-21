@@ -194,7 +194,7 @@ class HFModelWrapper(nn.Module):
                 quantization_config=nf4_config,
                 torch_dtype=torch.bfloat16 if bf16 else torch.float32,
                 device_map=device_map,
-                **rope_scaling_kwargs,
+                **rope_parameters_kwargs,
             )
 
             # gpt oss
