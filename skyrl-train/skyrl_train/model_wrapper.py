@@ -63,7 +63,8 @@ class HFModelWrapper(nn.Module):
         sequence_parallel_size=1,
         use_sample_packing: bool = False,
         use_torch_compile: bool = False,
-        rope_parameters: Dict[str, Any] = {},
+        rope_scaling: Dict[str, Any] = {},
+        rope_theta: float | None = None,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -113,10 +114,7 @@ class HFModelWrapper(nn.Module):
             # Load config first to set rope_parameters if needed
             config = AutoConfig.from_pretrained(pretrain_or_model, trust_remote_code=True)
             
-            # Set rope_parameters in config if provided (some models don't accept it as a kwarg)
-            # Filter out None values from rope_parameters
-            rope_parameters_kwargs = {}
-            
+            # Handle both rope_scaling/rope_theta (from fork) and rope_parameters (from kwargs)
             # Check if config supports rope_scaling or rope_parameters (models like Qwen2 use rope_scaling)
             # Also check model type to be extra safe - Qwen2 models don't accept rope_parameters as kwarg
             config_supports_rope = hasattr(config, 'rope_scaling') or hasattr(config, 'rope_parameters')
@@ -124,6 +122,10 @@ class HFModelWrapper(nn.Module):
             # Qwen2 models don't accept rope_parameters as a kwarg, always set via config
             is_qwen2 = model_type == 'qwen2'
             
+            rope_parameters_kwargs = {}
+            
+            # Handle rope_parameters from kwargs (if passed)
+            rope_parameters = kwargs.pop('rope_parameters', None)
             if rope_parameters:
                 # Remove None values to avoid passing empty/invalid configs
                 rope_parameters = {k: v for k, v in rope_parameters.items() if v is not None}
@@ -156,15 +158,33 @@ class HFModelWrapper(nn.Module):
                         # Only pass as kwarg if config doesn't support rope_scaling/rope_parameters
                         # AND it's not a Qwen2 model
                         rope_parameters_kwargs = {"rope_parameters": rope_parameters}
+            
+            # Handle rope_scaling and rope_theta parameters (from function signature)
+            if rope_scaling or rope_theta is not None:
+                # For Qwen2 models, set in config instead of passing as kwarg
+                if is_qwen2 or config_supports_rope:
+                    if rope_scaling and hasattr(config, 'rope_scaling'):
+                        if isinstance(rope_scaling, dict):
+                            config.rope_scaling = rope_scaling
+                    if rope_theta is not None and hasattr(config, 'rope_theta'):
+                        config.rope_theta = rope_theta
+                else:
+                    # Only pass as kwarg if config doesn't support it and it's not Qwen2
+                    if rope_scaling:
+                        rope_parameters_kwargs["rope_scaling"] = rope_scaling
+                    if rope_theta is not None:
+                        rope_parameters_kwargs["rope_theta"] = rope_theta
 
             # Final safety check: never pass rope_parameters for Qwen2 models
             # This prevents the error even if the above logic somehow fails
-            if is_qwen2 and "rope_parameters" in rope_parameters_kwargs:
-                rope_parameters_kwargs.pop("rope_parameters")
+            if is_qwen2:
+                rope_parameters_kwargs.pop("rope_parameters", None)
+                rope_parameters_kwargs.pop("rope_scaling", None)
             
             # Also check by model type name as additional safeguard
             if isinstance(pretrain_or_model, str) and "qwen" in pretrain_or_model.lower():
                 rope_parameters_kwargs.pop("rope_parameters", None)
+                rope_parameters_kwargs.pop("rope_scaling", None)
 
             self.model = model_class.from_pretrained(
                 pretrain_or_model,
@@ -174,7 +194,7 @@ class HFModelWrapper(nn.Module):
                 quantization_config=nf4_config,
                 torch_dtype=torch.bfloat16 if bf16 else torch.float32,
                 device_map=device_map,
-                **rope_parameters_kwargs,
+                **rope_scaling_kwargs,
             )
 
             # gpt oss
