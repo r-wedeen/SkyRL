@@ -110,12 +110,65 @@ class HFModelWrapper(nn.Module):
             else:
                 model_class = AutoModelForCausalLM
 
+            # Load config first to set rope_parameters if needed
+            config = AutoConfig.from_pretrained(pretrain_or_model, trust_remote_code=True)
+            
+            # Set rope_parameters in config if provided (some models don't accept it as a kwarg)
+            # Filter out None values from rope_parameters
             rope_parameters_kwargs = {}
+            
+            # Check if config supports rope_scaling or rope_parameters (models like Qwen2 use rope_scaling)
+            # Also check model type to be extra safe - Qwen2 models don't accept rope_parameters as kwarg
+            config_supports_rope = hasattr(config, 'rope_scaling') or hasattr(config, 'rope_parameters')
+            model_type = config.model_type if hasattr(config, 'model_type') else None
+            # Qwen2 models don't accept rope_parameters as a kwarg, always set via config
+            is_qwen2 = model_type == 'qwen2'
+            
             if rope_parameters:
-                rope_parameters_kwargs["rope_parameters"] = rope_parameters
+                # Remove None values to avoid passing empty/invalid configs
+                rope_parameters = {k: v for k, v in rope_parameters.items() if v is not None}
+                
+                if rope_parameters:
+                    # If config supports rope_scaling/rope_parameters OR it's a Qwen2 model,
+                    # set it in config and NEVER pass as kwarg
+                    if config_supports_rope or is_qwen2:
+                        # Try to use the transformers utility to set rope parameters
+                        try:
+                            from transformers.utils import apply_rope_parameters_to_config
+                            config = apply_rope_parameters_to_config(config, rope_parameters)
+                        except (ImportError, AttributeError):
+                            # Fallback: manually set rope parameters in config
+                            # For models that use rope_scaling (like Qwen2), convert rope_parameters
+                            if hasattr(config, 'rope_scaling') and rope_parameters.get('rope_type'):
+                                rope_type = rope_parameters.get('rope_type')
+                                if rope_type and rope_type != 'default':
+                                    config.rope_scaling = {
+                                        'type': rope_type,
+                                        'factor': rope_parameters.get('factor', 1.0),
+                                    }
+                                    if 'original_max_position_embeddings' in rope_parameters:
+                                        config.rope_scaling['original_max_position_embeddings'] = rope_parameters['original_max_position_embeddings']
+                            # Set rope_theta if provided
+                            if 'rope_theta' in rope_parameters and hasattr(config, 'rope_theta'):
+                                config.rope_theta = rope_parameters['rope_theta']
+                        # NEVER pass rope_parameters as kwarg when config supports it or it's Qwen2 (prevents Qwen2 error)
+                    else:
+                        # Only pass as kwarg if config doesn't support rope_scaling/rope_parameters
+                        # AND it's not a Qwen2 model
+                        rope_parameters_kwargs = {"rope_parameters": rope_parameters}
+
+            # Final safety check: never pass rope_parameters for Qwen2 models
+            # This prevents the error even if the above logic somehow fails
+            if is_qwen2 and "rope_parameters" in rope_parameters_kwargs:
+                rope_parameters_kwargs.pop("rope_parameters")
+            
+            # Also check by model type name as additional safeguard
+            if isinstance(pretrain_or_model, str) and "qwen" in pretrain_or_model.lower():
+                rope_parameters_kwargs.pop("rope_parameters", None)
 
             self.model = model_class.from_pretrained(
                 pretrain_or_model,
+                config=config,
                 trust_remote_code=True,
                 attn_implementation=self.attn_implementation,
                 quantization_config=nf4_config,
@@ -550,6 +603,16 @@ def get_llm_for_sequence_regression(
 
     config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True)
     config._attn_implementation = "flash_attention_2" if use_flash_attention_2 else "eager"
+
+    # Check if this is a Qwen2 model and filter rope_parameters from kwargs if present
+    # Qwen2 models don't accept rope_parameters as a kwarg to from_pretrained
+    model_type = config.model_type if hasattr(config, 'model_type') else None
+    is_qwen2 = model_type == 'qwen2'
+    if is_qwen2 and 'rope_parameters' in kwargs:
+        kwargs.pop('rope_parameters')
+    # Also check by model name as additional safeguard
+    if isinstance(model_name_or_path, str) and 'qwen' in model_name_or_path.lower() and 'rope_parameters' in kwargs:
+        kwargs.pop('rope_parameters')
 
     base_class = AutoModel._model_mapping[type(config)]
     base_pretrained_class = base_class.__base__
