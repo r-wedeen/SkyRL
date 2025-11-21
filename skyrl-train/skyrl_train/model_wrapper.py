@@ -122,6 +122,10 @@ class HFModelWrapper(nn.Module):
             # Qwen2 models don't accept rope_parameters as a kwarg, always set via config
             is_qwen2 = model_type == 'qwen2'
             
+            # Early safeguard: Remove rope_parameters from kwargs for Qwen2 models immediately
+            if is_qwen2 or (isinstance(pretrain_or_model, str) and "qwen" in pretrain_or_model.lower()):
+                kwargs.pop('rope_parameters', None)
+            
             rope_parameters_kwargs = {}
             
             # Handle rope_parameters from kwargs (if passed)
@@ -185,6 +189,14 @@ class HFModelWrapper(nn.Module):
             if isinstance(pretrain_or_model, str) and "qwen" in pretrain_or_model.lower():
                 rope_parameters_kwargs.pop("rope_parameters", None)
                 rope_parameters_kwargs.pop("rope_scaling", None)
+            
+            # Absolute final safeguard: Remove rope_parameters from kwargs dict if it somehow got in there
+            # This is a last resort check before calling from_pretrained
+            if is_qwen2 or (isinstance(pretrain_or_model, str) and "qwen" in pretrain_or_model.lower()):
+                if "rope_parameters" in rope_parameters_kwargs:
+                    del rope_parameters_kwargs["rope_parameters"]
+                if "rope_scaling" in rope_parameters_kwargs:
+                    del rope_parameters_kwargs["rope_scaling"]
 
             self.model = model_class.from_pretrained(
                 pretrain_or_model,
