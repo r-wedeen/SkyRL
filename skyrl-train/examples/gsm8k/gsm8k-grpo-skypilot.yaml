@@ -1,16 +1,16 @@
 # Run this from the repository root after cloning SkyRL.
 resources:
-  infra: aws           # replace this with what cloud you want to launch on
-  accelerators: L40S:4 # 4x 48 GB GPUs; adjust to the SKU that matches your quota
+  infra: nebius           # replace this with what cloud you want to launch on
+  accelerators: L40S:2 # 4x 48 GB GPUs; adjust to the SKU that matches your quota
   memory: 64+          # every node has at least 64 GB memory
   ports: 6479          # expose port for ray dashboard
 #  network_tier: best # when using multiple nodes, communication can become a bottleneck
 
-num_nodes: 2         # cluster size
+num_nodes: 1         # cluster size
 
 # Set to a git repository 
 workdir:
-  url: https://github.com/NovaSky-AI/SkyRL.git
+  url: https://github.com/r-wedeen/SkyRL.git
   ref: main
 
 # Set secrets
@@ -25,6 +25,9 @@ envs:
 
 # Commands run on each node of the remote cluster to set up the environment (e.g., install dependencies). These are run directly inside Docker.
 setup: |
+  # Install Python development headers needed for compiling C extensions (e.g., Triton)
+  sudo apt-get update && sudo apt-get install -y python3.12-dev python3-dev build-essential && sudo apt-get clean
+  
   cd skyrl-train
   uv venv --python 3.12 --seed
   source .venv/bin/activate
